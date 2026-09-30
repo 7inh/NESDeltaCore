@@ -84,6 +84,13 @@ public class NESEmulatorBridge : NSObject, EmulatorBridging
     
     public private(set) var frameDuration: TimeInterval = (1.0 / 60.0)
     
+    /// Owned PCM samples, before local playback. Invoked on the emulation thread.
+    public var audioFrameHandler: ((Data) -> Void)?
+    /// Optional frame-boundary hooks. Install/remove only while emulation is paused.
+    public var shouldRunFrameHandler: (() -> Bool)?
+    public var willRunFrameHandler: (() -> Void)?
+    public var didRunFrameHandler: (() -> Void)?
+
     public var audioRenderer: AudioRendering?
     public var videoRenderer: VideoRendering?
     public var saveUpdateHandler: (() -> Void)?
@@ -106,6 +113,10 @@ public class NESEmulatorBridge : NSObject, EmulatorBridging
         
         NESSetAudioCallback { (buffer, size) in
             NESEmulatorBridge.shared.audioRenderer?.audioBuffer.write(buffer, size: Int(size))
+            if let handler = NESEmulatorBridge.shared.audioFrameHandler
+            {
+                handler(Data(bytes: buffer, count: Int(size)))
+            }
         }
         
         NESSetVideoCallback { (buffer, size) in
@@ -183,6 +194,7 @@ extension NESEmulatorBridge: WKScriptMessageHandler
         case .audio:
             guard let bytes = payload["data"] as? [UInt8] else { return }
             self.audioRenderer?.audioBuffer.write(bytes, size: bytes.count)
+            if let handler = self.audioFrameHandler { handler(Data(bytes)) }
 
         case .video:
             guard let string = payload["data"] as? String else { return }
@@ -302,6 +314,9 @@ public extension NESEmulatorBridge
     
     func runFrame(processVideo: Bool)
     {
+        guard self.shouldRunFrameHandler?() != false else { return }
+        self.willRunFrameHandler?()
+        defer { self.didRunFrameHandler?() }
         #if NATIVE
         
         NESRunFrame()
